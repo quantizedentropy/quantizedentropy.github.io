@@ -677,20 +677,60 @@
     updateStatusBar(file);
   }
 
+  // Some hosting contexts (e.g. a sandboxed preview) don't allow a page to
+  // trigger a browser download directly and instead mediate it through
+  // window.claude.use("downloads"). Prefer that when present; otherwise
+  // fall back to a plain anchor download, which is what a normal browser
+  // visiting this page directly (like the deployed site) uses.
+  var downloadsCapPromise = null;
+  function getDownloadsCapability() {
+    if (downloadsCapPromise) return downloadsCapPromise;
+    if (typeof window.claude === "object" && window.claude && typeof window.claude.use === "function") {
+      downloadsCapPromise = window.claude.use("downloads").catch(function () { return null; });
+    } else {
+      downloadsCapPromise = Promise.resolve(null);
+    }
+    return downloadsCapPromise;
+  }
+
   function downloadCurrentFile() {
     var file = getFile(App.state.activeId);
     if (!file) { showToast("Open a file first."); return; }
     var model = App.models[file.id];
     var content = model ? model.getValue() : file.content;
-    var blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = file.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+
+    getDownloadsCapability().then(function (downloads) {
+      if (downloads) {
+        downloads.save({ filename: file.name, data: content }).then(function () {
+          showToast('Saved "' + file.name + '".');
+        }, function (err) {
+          var code = err && err.code;
+          if (code === "declined") return;
+          if (code === "rejected_extension" || code === "extension_not_enabled") {
+            showToast(
+              "This preview can only save a few file types (txt, md, html, json, csv, svg, pdf). " +
+              "Select all the code (Ctrl/Cmd+A) and copy it instead.",
+              6000
+            );
+          } else if (code === "too_large") {
+            showToast("That file is too large to save from here.");
+          } else {
+            showToast("Couldn't save the file here — try copying the code instead.");
+          }
+        });
+        return;
+      }
+      // Not mediated — do a normal browser download.
+      var blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    });
   }
 
   function handleRun() {
